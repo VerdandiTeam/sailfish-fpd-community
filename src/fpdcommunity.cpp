@@ -154,7 +154,7 @@ void FPDCommunity::setUser(uint32_t uid)
     m_androidFP.setGroup(0, andrPath);
 
     // fingers are enumerated and loaded after that
-    enumerate();
+    slot_enumerated();
 }
 
 void FPDCommunity::saveFingers()
@@ -195,8 +195,9 @@ void FPDCommunity::loadFingers()
     QList<uint32_t> keys = m_fingerMap.keys();
     for (int i = 0; i < keys.size(); ++i) {
         if (!enumeratedFingers.contains(keys[i])) {
-            qWarning() << "Loaded finger " << keys[i] << m_fingerMap.value(keys[i]) << "not found in store, removing";
-            m_fingerMap.remove(keys[i]);
+            qWarning() << "Loaded finger " << keys[i] << m_fingerMap.value(keys[i]) << "not found in store";
+            enumeratedFingers.append(keys[i]);
+//            m_fingerMap.remove(keys[i]);
         }
     }
 
