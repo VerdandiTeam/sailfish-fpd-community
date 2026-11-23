@@ -7,6 +7,7 @@
 #include <QDBusMessage>
 
 #include "androidfp.h"
+#include "udfps.h"
 
 #define SERVICE_NAME "org.sailfishos.fingerprint1"
 
@@ -130,19 +131,32 @@ private slots:
     void slot_succeeded(uint32_t finger);
     void slot_failed(const QString &message);
     void slot_acquired(int info); //Convert the android Acquired State to SFOS state
+    void slot_vendorAcquired(int vendorCode);
     void slot_removed(uint32_t finger);
     void slot_authenticated(uint32_t finger);
     void slot_cancelIdentify();
+    void slot_deferredCancel();
     void slot_enumerated();
 
 private:
     void abort();
+    void flushDeferredAbort();
     void enumerate();
     void setUser(uint32_t uid);
 
 private:
     AndroidFP m_androidFP;
+    Udfps m_udfps;
     QTimer m_cancelTimer;
+
+    // UDFPS hand-over: when the display turns on, mce aborts its wakeup
+    // identify and the lockscreen starts its own. If a finger is on the
+    // sensor at that moment, the HAL authentication is kept running and
+    // handed to the next Identify instead of being cancelled.
+    bool m_halAuthActive = false;
+    bool m_abortDeferred = false;
+    uint32_t m_pendingFinger = 0;
+    QTimer m_deferredCancelTimer;
 
     bool m_dbusRegistered = false;
     QString m_dbusCaller;

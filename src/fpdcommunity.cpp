@@ -25,6 +25,7 @@ FPDCommunity::FPDCommunity()
     connect(&m_androidFP, &AndroidFP::failed, this, &FPDCommunity::slot_failed);
     connect(&m_androidFP, &AndroidFP::removed, this, &FPDCommunity::slot_removed);
     connect(&m_androidFP, &AndroidFP::acquired, this, &FPDCommunity::slot_acquired);
+    connect(&m_androidFP, &AndroidFP::vendorAcquired, this, &FPDCommunity::slot_vendorAcquired);
     connect(&m_androidFP, &AndroidFP::authenticated, this, &FPDCommunity::slot_authenticated);
     connect(&m_androidFP, &AndroidFP::enumerated, this, &FPDCommunity::slot_enumerated);
 
@@ -32,6 +33,11 @@ FPDCommunity::FPDCommunity()
     m_cancelTimer.setSingleShot(true);
     m_cancelTimer.setInterval(30000);
     connect(&m_cancelTimer, &QTimer::timeout, this, &FPDCommunity::slot_cancelIdentify);
+
+    // a deferred abort is cancelled for real if no Identify takes over
+    m_deferredCancelTimer.setSingleShot(true);
+    m_deferredCancelTimer.setInterval(2000);
+    connect(&m_deferredCancelTimer, &QTimer::timeout, this, &FPDCommunity::slot_deferredCancel);
 
     // set current user - nemo for now
     setUser(100000);
@@ -219,6 +225,7 @@ int FPDCommunity::Enroll(const QString &finger, const QDBusMessage &message)
 {
     const QString caller = message.service();
     qDebug() << Q_FUNC_INFO << finger << caller;
+    flushDeferredAbort();
 
     // check if busy by other client
     if (!m_dbusCaller.isEmpty() && m_dbusCaller != caller) {
@@ -265,6 +272,23 @@ int FPDCommunity::Identify(const QDBusMessage &message)
     setState(FPSTATE_IDENTIFYING);
     m_dbusCaller = caller;
     m_cancelTimer.start();
+
+    if (m_abortDeferred) {
+        // take over the HAL authentication kept running by abort()
+        qInfo() << "udfps: Identify takes over running authentication";
+        m_abortDeferred = false;
+        m_deferredCancelTimer.stop();
+        if (m_pendingFinger) {
+            const uint32_t finger = m_pendingFinger;
+            m_pendingFinger = 0;
+            QTimer::singleShot(0, this, [this, finger]() { slot_authenticated(finger); });
+            return FPREPLY_STARTED;
+        }
+        if (m_halAuthActive)
+            return FPREPLY_STARTED;
+    }
+
+    m_halAuthActive = true;
     m_androidFP.authenticate();
     return FPREPLY_STARTED;
 }
@@ -273,6 +297,7 @@ void FPDCommunity::Clear(const QDBusMessage &message)
 {
     const QString caller = message.service();
     qDebug() << Q_FUNC_INFO << caller;
+    flushDeferredAbort();
 
     // check if busy by other client
     if (!m_dbusCaller.isEmpty() && m_dbusCaller != caller) {
@@ -322,6 +347,7 @@ int FPDCommunity::Verify(const QDBusMessage &message)
 {
     const QString caller = message.service();
     qDebug() << Q_FUNC_INFO << caller;
+    flushDeferredAbort();
 
     // check if busy by other client
     if (!m_dbusCaller.isEmpty() && m_dbusCaller != caller) {
@@ -348,6 +374,7 @@ int FPDCommunity::Remove(const QString &finger, const QDBusMessage &message)
 {
     const QString caller = message.service();
     qDebug() << Q_FUNC_INFO << finger << caller;
+    flushDeferredAbort();
 
     // check if busy by other client
     if (!m_dbusCaller.isEmpty() && m_dbusCaller != caller) {
@@ -379,10 +406,46 @@ int FPDCommunity::Remove(const QString &finger, const QDBusMessage &message)
 
 void FPDCommunity::abort()
 {
-    m_androidFP.cancel();
     m_cancelTimer.stop();
+
+    if (m_state == FPSTATE_IDENTIFYING && m_halAuthActive && m_udfps.pressed()) {
+        // mce aborts its identify as soon as the display starts to power
+        // up and the lockscreen then starts a new one. Cancelling the HAL
+        // here would block until its capture times out and waste the
+        // press, so keep the authentication running for the next Identify.
+        qInfo() << "udfps: finger on sensor, deferring cancel for hand-over";
+        m_abortDeferred = true;
+        m_pendingFinger = 0;
+        m_deferredCancelTimer.start();
+        emit Aborted();
+        setState(FPSTATE_IDLE);
+        return;
+    }
+
+    m_halAuthActive = false;
+    m_androidFP.cancel();
     emit Aborted();
     setState(FPSTATE_IDLE);
+}
+
+void FPDCommunity::slot_deferredCancel()
+{
+    if (!m_abortDeferred)
+        return;
+    qInfo() << "udfps: no Identify took over, cancelling";
+    m_abortDeferred = false;
+    m_pendingFinger = 0;
+    if (m_halAuthActive) {
+        m_halAuthActive = false;
+        m_androidFP.cancel();
+    }
+    m_udfps.fingerUp();
+}
+
+void FPDCommunity::flushDeferredAbort()
+{
+    m_deferredCancelTimer.stop();
+    slot_deferredCancel();
 }
 
 void FPDCommunity::enumerate()
@@ -422,8 +485,19 @@ void FPDCommunity::slot_failed(const QString &message)
     qDebug() << Q_FUNC_INFO << message;
 
     emit ErrorInfo(message); // always report error via signal
-    if (m_state == FPSTATE_IDENTIFYING && message == "FINGER_NOT_RECOGNIZED")
-        return; // giving a chance to try another finger
+    if (message == "FINGER_NOT_RECOGNIZED") {
+        if (m_state == FPSTATE_IDENTIFYING || m_abortDeferred)
+            return; // giving a chance to try another finger, HAL keeps going
+    } else {
+        m_halAuthActive = false;
+        if (m_abortDeferred) {
+            // the kept authentication ended; the next Identify starts anew
+            m_abortDeferred = false;
+            m_deferredCancelTimer.stop();
+            m_pendingFinger = 0;
+            m_udfps.fingerUp();
+        }
+    }
 
     if (m_state != FPSTATE_IDLE) {
         emit Failed();
@@ -469,6 +543,17 @@ void FPDCommunity::slot_acquired(int info)
     }
 }
 
+void FPDCommunity::slot_vendorAcquired(int vendorCode)
+{
+    // OnePlus/Goodix FOD HAL: vendor code 0 = finger down on the sensor,
+    // 1 = finger up (same as LineageOS FingerprintInscreen::handleAcquired).
+    qDebug() << Q_FUNC_INFO << vendorCode;
+    if (vendorCode == 0)
+        m_udfps.fingerDown();
+    else if (vendorCode == 1)
+        m_udfps.fingerUp();
+}
+
 void FPDCommunity::slot_removed(uint32_t finger)
 {
     qDebug() << Q_FUNC_INFO << finger;
@@ -490,6 +575,13 @@ void FPDCommunity::slot_removed(uint32_t finger)
 void FPDCommunity::slot_authenticated(uint32_t finger)
 {
     qDebug() << Q_FUNC_INFO << finger;
+    m_halAuthActive = false;
+    if (m_abortDeferred && m_state == FPSTATE_IDLE) {
+        // matched during the hand-over gap: deliver to the next Identify
+        qInfo() << "udfps: match during hand-over, holding it for the next Identify";
+        m_pendingFinger = finger;
+        return;
+    }
     m_cancelTimer.stop();
     if (m_fingerMap.contains(finger)){
         emit Identified(m_fingerMap[finger]);
@@ -503,6 +595,7 @@ void FPDCommunity::slot_authenticated(uint32_t finger)
 void FPDCommunity::slot_cancelIdentify()
 {
     qDebug() << Q_FUNC_INFO;
+    m_halAuthActive = false;
     m_androidFP.cancel();
     emit Failed();
     setState(FPSTATE_IDLE);
@@ -520,8 +613,13 @@ void FPDCommunity::setState(FPDCommunity::State newState)
 {
     qDebug() << Q_FUNC_INFO << newState;
 
-    if (newState == FPSTATE_IDLE)
+    if (newState == FPSTATE_IDLE) {
         m_dbusCaller.clear();
+        // The HAL may not report finger up after a match/abort; don't leave
+        // HBM on. Not during a hand-over: the finger is still being read.
+        if (!m_abortDeferred)
+            m_udfps.fingerUp();
+    }
 
     if (newState != m_state) {
         m_state = newState;

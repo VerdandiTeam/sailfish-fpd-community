@@ -17,9 +17,14 @@ QT += dbus
 
 LIBS += -lhybris-common
 
+CONFIG += link_pkgconfig
+PKGCONFIG += libgbinder
+
 SOURCES += src/sailfish-fpd-community.cpp \
     src/androidfp.cpp \
     src/fpdcommunity.cpp \
+    src/udfps.cpp \
+    src/kmhmac.cpp \
     src/hardware/biometry_fp_api.cpp \
     src/util/property_store.cpp
 
@@ -38,6 +43,8 @@ HEADERS += \
     src/androidfp.h \
     src/biometry.h \
     src/fpdcommunity.h \
+    src/udfps.h \
+    src/kmhmac.h \
     src/hardware/android_hw_module.h \
     src/util/property_store.h
 

@@ -30,13 +30,14 @@ signals:
     void authenticated(uint32_t fingerId);
     void enrollProgress(float progress); //Progress is 0..1
     void acquired(int info);
+    void vendorAcquired(int vendorCode); // ACQUIRED_VENDOR, e.g. UDFPS finger down/up
     void enumerated(); // fingerprint list ready
 
 private:
     void enumerateCallback(uint32_t finger, uint32_t remaining);
     void enrollCallback(uint32_t finger, uint32_t remaining);
     void removeCallback(uint32_t finger, uint32_t remaining);
-    void acquiredCallback(UHardwareBiometryFingerprintAcquiredInfo info);
+    void acquiredCallback(UHardwareBiometryFingerprintAcquiredInfo info, int32_t vendorCode);
 
     static void enrollresult_cb(uint64_t, uint32_t, uint32_t, uint32_t, void *);
     static void acquired_cb(uint64_t, UHardwareBiometryFingerprintAcquiredInfo, int32_t, void *);

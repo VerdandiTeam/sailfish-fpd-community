@@ -15,6 +15,7 @@
 #include <QDir>
 
 #include "fpdcommunity.h"
+#include "kmhmac.h"
 
 static void daemonize();
 static void signalHandler(int sig);
@@ -33,6 +34,10 @@ int main(int argc, char **argv)
     qDebug() << "Starting sailfish-fpd-community daemon";
 
     qRegisterMetaType<uint32_t>("uint32_t");
+
+    // Before FPDCommunity connects to the fingerprint HAL, which loads the
+    // TA: the TA picks up the auth token key when it is loaded.
+    agreeKeymasterHmac();
 
     FPDCommunity service;
 

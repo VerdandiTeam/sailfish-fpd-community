@@ -11,6 +11,7 @@ BuildRequires:  pkgconfig(Qt5Core)
 BuildRequires:  pkgconfig(Qt5DBus)
 BuildRequires:  desktop-file-utils
 BuildRequires:  libhybris-devel
+BuildRequires:  pkgconfig(libgbinder)
 BuildRequires:  systemd
 Provides:   sailfish-fpd
 
